@@ -1,0 +1,409 @@
+---
+title: "DESeq2"
+date: "10/2/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Install Bioconductor and packages 
+**Install packages only if you're running this on your computer**. The packages below are already installed on `edupod` so you don't need to install them if you're running this on `edupod`.
+```{r}
+install.packages('BiocManager')
+
+BiocManager::install("DESeq2")
+BiocManager::install("tximport")
+BiocManager::install('GenomicFeatures')
+```
+
+```{r}
+BiocManager::install('rhdf5')
+library(rhdf5)
+```
+```{r}
+BiocManager::install('gplots')
+library(gplots)
+```
+
+## Load packages
+```{r load, message=FALSE, warning=FALSE}
+library(tximport)
+library(DESeq2)
+library(tidyverse)
+library(cowplot)
+library(pheatmap)
+theme_set(theme_cowplot())
+library(GenomicFeatures)
+```
+
+
+```{r}
+read.delim("GRCh38_latest_genomic.gff", header=F, comment.char="#") -> gff
+```
+
+```{r}
+GFF <- makeTxDbFromGFF('GRCh38_latest_genomic.gff')
+```
+```{r}
+saveDb(GFF, file="HumanGFF.sqlite")
+```
+```{r}
+GFF_txdb <- loadDb("HumanGFF.sqlite")
+columns(GFF_txdb)
+k = keys(GFF_txdb, keytype = "TXNAME")
+tx2gene = select(GFF_txdb, k, "GENEID", "TXNAME")
+
+```
+```{r}
+head(tx2gene)
+```
+```{r}
+dir = "C:/Mansi/Biostatistics/Biostat_project/"
+files = file.path(paste0(dir, "Downs_Euploid_Neuron"), list.files(paste0(dir, "Downs_Euploid_Neuron")), "abundance.h5")
+names(files) = list.files(paste0(dir, "Downs_Euploid_Neuron"))
+```
+
+
+```{r}
+library(rhdf5)
+txi = tximport(files, type = "kallisto", tx2gene = tx2gene, 
+txIn = TRUE, txOut = FALSE, countsFromAbundance = "no")
+```
+```{r}
+names(txi)
+```
+```{r}
+deseq2.colData <- data.frame(condition=factor(c(rep("Euploid_hPSC", 5), rep("Trisomy21_hPSC", 5))), type=factor(rep("paired-read", 10)))
+```
+
+```{r}
+dds <- DESeqDataSetFromTximport(txi, colData = deseq2.colData, design = ~ condition)
+```
+```{r}
+dds = DESeq(dds)
+```
+```{r}
+res <- results(dds)
+```
+
+```{r}
+res <- res[order(rownames(res)), ]
+```
+
+```{r}
+str(res)
+```
+```{r}
+dim(res[!is.na(res$padj) & res$padj <= 0.05, ])
+```
+```{r}
+vsd <- vst(dds, blind = FALSE)
+plotPCA(vsd, intgroup = "condition")
+```
+```{r}
+res <- results(dds)
+res_ordered <- res[order(res$padj), ]
+top_genes <- row.names(res_ordered)[1:50]
+# Extract counts and normalize
+counts <- counts(dds, normalized = TRUE)
+counts_top <- counts[top_genes, ]
+# Log-transform counts
+log_counts_top <- log2(counts_top + 1)
+library(RColorBrewer)
+library(gplots)
+mypalette <- brewer.pal(11,"RdYlBu")
+morecols <- colorRampPalette(mypalette)
+# Generate heatmap
+heatmap.2(log_counts_top,col=rev(morecols(50)),trace="none", main="variable genes across samples",scale="row")
+pheatmap(log_counts_top, scale = "row")
+```
+```{r}
+tmp.sig <- res[!is.na(res$padj) & res$padj <= 0.05, ]
+tmp_df <- as.data.frame(tmp.sig)
+```
+
+```{r}
+tmp <- res
+# The main plot
+plot(tmp$baseMean, tmp$log2FoldChange, pch=20, cex=0.45, ylim=c(-3, 3), log="x", col="darkgray",
+     main="DEG Dessication  (pval <= 0.05)",
+     xlab="mean of normalized counts",
+     ylab="Log2 Fold Change")
+
+points(tmp.sig$baseMean, tmp.sig$log2FoldChange, pch=20, cex=0.45, col="lightblue")
+# 2 FC lines
+abline(h=c(-1,1), col="blue")
+
+```
+
+```{r}
+res_df <- as.data.frame(res)
+res_df$gene <- row.names(res_df)
+# Create volcano plot
+volcano_plot <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj), color = padj < 0.01)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("grey", "lightblue")) +
+  labs(title = "Volcano Plot",
+       x = "Log2 Fold Change",
+       y = "-Log10 Adjusted P-value",
+       color = "Significantly\nDifferentially Expressed") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "top")
+print(volcano_plot)
+
+```
+```{r}
+res3<-data.frame(tmp.sig)
+res3$minusLog10Pvalue <- -log10(res3$pvalue)
+res3$colorExpression <- ifelse(res3$pvalue < 0.05 & res3$log2FoldChange > 2,
+"Upregulated",
+ifelse(res3$pvalue < 0.05 & res3$log2FoldChange < -2,
+"Downregulated", "Not significant"))
+```
+
+```{r}
+res2<-data.frame(tmp.sig)
+res2$minusLog10Pvalue <- -log10(res2$pvalue)
+res2$colorExpression <- ifelse(res2$pvalue < 0.05 & res2$log2FoldChange > 2,
+"Upregulated",
+ifelse(res2$pvalue < 0.05 & res2$log2FoldChange < -2,
+"Downregulated", "Not significant"))
+
+# Plotting
+ggplot(res2, aes(x=log2FoldChange, y=minusLog10Pvalue)) +
+geom_point(aes(color = colorExpression,
+alpha = abs(log2FoldChange)), alpha = 0.6) +
+scale_color_manual(values = c("Upregulated" = "lightblue",
+"Downregulated" = "purple",
+"Not significant" = "grey")) +
+labs(title = "Enhanced Volcano plot of differential expression",
+x = "Log2 Fold Change",
+y = "-Log10 p-value") +
+theme_classic()
+```
+```{r}
+options(ggrepel.max.overlaps = Inf)
+res2<-data.frame(tmp.sig)
+res2$minusLog10Pvalue <- -log10(res2$pvalue)
+res2$colorExpression <- ifelse(res2$pvalue < 0.05 & res2$log2FoldChange > 2,
+"Upregulated",
+ifelse(res2$pvalue < 0.05 & res2$log2FoldChange < -2,
+"Downregulated", "Not significant"))
+input <- cbind(gene=rownames(res2),res2)
+input <- input[order(input$minusLog10Pvalue,decreasing = TRUE),]
+# Plotting
+volc = ggplot(input, aes(x=log2FoldChange, y=minusLog10Pvalue)) +
+geom_point(aes(color = colorExpression,
+alpha = abs(log2FoldChange)), alpha = 0.6) +
+scale_color_manual(values = c("Upregulated" = "lightblue",
+"Downregulated" = "purple",
+"Not significant" = "grey")) +
+labs(title = "Enhanced Volcano plot of differential expression",
+x = "Log2 Fold Change",
+y = "-Log10 p-value") +
+theme_classic()
+volc + geom_text_repel(data=head(input, 20), aes(label=gene))
+volc
+```
+
+
+
+```{r}
+write.table(res2, "C:/Mansi/Biostatistics/Biostat_project/DEG_trisomy21_hPSC.txt", sep = '\t', row.names = T)
+```
+
+```{r}
+dir = "C:/Mansi/Biostatistics/Biostat_project/"
+files = file.path(paste0(dir, "Downs_Euploid_Neuron"), list.files(paste0(dir, "Downs_Euploid_Neuron")), "abundance.h5")
+names(files) = list.files(paste0(dir, "Downs_Euploid_Neuron"))
+```
+
+```{r}
+library(rhdf5)
+txi = tximport(files, type = "kallisto", tx2gene = tx2gene, 
+txIn = TRUE, txOut = FALSE, countsFromAbundance = "no")
+```
+
+```{r}
+names(txi)
+```
+
+```{r}
+deseq2.colData <- data.frame(condition=factor(c(rep("Euploid_Neuron", 5), rep("Trisomy21_Neuron", 5))), type=factor(rep("paired-read", 10)))
+```
+
+```{r}
+dds <- DESeqDataSetFromTximport(txi, colData = deseq2.colData, design = ~ condition)
+```
+
+```{r}
+dds = DESeq(dds)
+```
+
+```{r}
+res <- results(dds)
+```
+
+```{r}
+res <- res[order(rownames(res)), ]
+```
+
+```{r}
+str(res)
+```
+
+```{r}
+dim(res[!is.na(res$padj) & res$padj <= 0.05, ])
+```
+
+```{r}
+vsd <- vst(dds, blind = FALSE)
+plotPCA(vsd, intgroup = "condition")
+```
+
+```{r}
+res <- results(dds)
+res_ordered <- res[order(res$padj), ]
+top_genes <- row.names(res_ordered)[1:50]
+# Extract counts and normalize
+counts <- counts(dds, normalized = TRUE)
+counts_top <- counts[top_genes, ]
+# Log-transform counts
+log_counts_top <- log2(counts_top + 1)
+library(RColorBrewer)
+library(gplots)
+mypalette <- brewer.pal(11,"RdYlBu")
+morecols <- colorRampPalette(mypalette)
+# Generate heatmap
+heatmap.2(log_counts_top,col=rev(morecols(50)),trace="none", main="variable genes across samples",scale="row")
+pheatmap(log_counts_top, scale = "row")
+```
+
+```{r}
+tmp.sig <- res[!is.na(res$padj) & res$padj <= 0.05, ]
+tmp_df <- as.data.frame(tmp.sig)
+```
+
+```{r}
+tmp <- res
+# The main plot
+plot(tmp$baseMean, tmp$log2FoldChange, pch=20, cex=0.45, ylim=c(-3, 3), log="x", col="darkgray",
+     main="DEG Dessication  (pval <= 0.05)",
+     xlab="mean of normalized counts",
+     ylab="Log2 Fold Change")
+
+points(tmp.sig$baseMean, tmp.sig$log2FoldChange, pch=20, cex=0.45, col="lightblue")
+# 2 FC lines
+abline(h=c(-1,1), col="blue")
+
+```
+
+```{r}
+res_df <- as.data.frame(res)
+res_df$gene <- row.names(res_df)
+# Create volcano plot
+volcano_plot <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj), color = padj < 0.01)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("grey", "lightblue")) +
+  labs(title = "Volcano Plot",
+       x = "Log2 Fold Change",
+       y = "-Log10 Adjusted P-value",
+       color = "Significantly\nDifferentially Expressed") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "top")
+print(volcano_plot)
+
+```
+```{r}
+res3<-data.frame(tmp.sig)
+res3$minusLog10Pvalue <- -log10(res3$pvalue)
+res3$colorExpression <- ifelse(res3$pvalue < 0.05 & res3$log2FoldChange > 2,
+"Upregulated",
+ifelse(res3$pvalue < 0.05 & res3$log2FoldChange < -2,
+"Downregulated", "Not significant"))
+```
+
+```{r}
+library("ggplot2") #Best plots
+BiocManager::install('ggrepel')
+library("ggrepel") #Avoid overlapping labels
+```
+
+```{r}
+res2<-data.frame(tmp.sig)
+res2$minusLog10Pvalue <- -log10(res2$pvalue)
+res2$colorExpression <- ifelse(res2$pvalue < 0.05 & res2$log2FoldChange > 2,
+"Upregulated",
+ifelse(res2$pvalue < 0.05 & res2$log2FoldChange < -2,
+"Downregulated", "Not significant"))
+
+# Plotting
+ggplot(res2, aes(x=log2FoldChange, y=minusLog10Pvalue)) +
+geom_point(aes(color = colorExpression,
+alpha = abs(log2FoldChange)), alpha = 0.6) +
+scale_color_manual(values = c("Upregulated" = "lightblue",
+"Downregulated" = "purple",
+"Not significant" = "grey")) +
+labs(title = "Enhanced Volcano plot of differential expression",
+x = "Log2 Fold Change",
+y = "-Log10 p-value") +
+theme_classic()
+```
+
+```{r}
+write.table(res2, "C:/Mansi/Biostatistics/Biostat_project/DEG_trisomy21_Neuron.txt", sep = '\t', row.names = T)
+```
+
+```{r}
+res2<-data.frame(tmp.sig)
+res2$minusLog10Pvalue <- -log10(res2$pvalue)
+res2$colorExpression <- ifelse(res2$pvalue < 0.05 & res2$log2FoldChange > 2,
+"Upregulated",
+ifelse(res2$pvalue < 0.05 & res2$log2FoldChange < -2,
+"Downregulated", "Not significant"))
+
+# Plotting
+ggplot(res2, aes(x=log2FoldChange, y=minusLog10Pvalue)) +
+geom_point(aes(color = colorExpression,
+alpha = abs(log2FoldChange)), alpha = 0.6) +
+scale_color_manual(values = c("Upregulated" = "lightblue",
+"Downregulated" = "purple",
+"Not significant" = "grey")) +
+labs(title = "Enhanced Volcano plot of differential expression",
+x = "Log2 Fold Change",
+y = "-Log10 p-value") +
+theme_classic()
+volc+geom_text_repel(data=head(input, 20), aes(label=gene))
+volc
+```
+
+```{r}
+options(ggrepel.max.overlaps = Inf)
+res2<-data.frame(tmp.sig)
+res2$minusLog10Pvalue <- -log10(res2$pvalue)
+res2$colorExpression <- ifelse(res2$pvalue < 0.05 & res2$log2FoldChange > 2,
+"Upregulated",
+ifelse(res2$pvalue < 0.05 & res2$log2FoldChange < -2,
+"Downregulated", "Not significant"))
+input <- cbind(gene=rownames(res2),res2)
+input <- input[order(input$minusLog10Pvalue,decreasing = TRUE),]
+# Plotting
+volc = ggplot(input, aes(x=log2FoldChange, y=minusLog10Pvalue)) +
+geom_point(aes(color = colorExpression,
+alpha = abs(log2FoldChange)), alpha = 0.6) +
+scale_color_manual(values = c("Upregulated" = "lightblue",
+"Downregulated" = "purple",
+"Not significant" = "grey")) +
+labs(title = "Enhanced Volcano plot of differential expression",
+x = "Log2 Fold Change",
+y = "-Log10 p-value") +
+theme_classic()
+volc + geom_text_repel(data=head(input, 20), aes(label=gene))
+volc
+```
