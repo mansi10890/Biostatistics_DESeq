@@ -1,0 +1,179 @@
+---
+title: "gene ontology analysis and convergence study between DS and FMRP"
+output: html_document
+date: "2023-11-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+###GeneOverlap
+```{r}
+df_1 = read.csv("DEG_EU_DS_Neurons.csv", header=TRUE, sep = '\t')
+```
+```{r}
+df_2 = read.csv("DEG_FMR_KO_WT_Neurons.csv", header=TRUE, sep = '\t')
+```
+```{r}
+library(RColorBrewer)
+myCol <- brewer.pal(3, "Set1")
+venn.diagram(x = list(rownames(df_1),rownames(df_2)),
+                      category.names= c("DS","FXS"),
+                      width = 800,height = 600 ,
+                      fill = myCol[c(1:2)],lty = 'blank', imagetype="png",
+                      fontface = "bold",cat.default.pos = "outer",cat.pos = c(-15,15),
+                      filename="overlap_DS_FXS_hPSC.png",cex = .5,cat.cex = .2)
+```
+```{r}
+overlap <- calculate.overlap(x = list(rownames(df_1),rownames(df_2)))
+ovralap_df <- as.data.frame(overlap$a3)
+```
+```{r}
+df_1 <- cbind(newColName = rownames(df_1), df_1)
+rownames(df_1) <- 1:nrow(df_1)
+```
+```{r}
+df_2 <- cbind(newColName = rownames(df_2), df_2)
+rownames(df_2) <- 1:nrow(df_2)
+```
+```{r}
+#df_2 = subset(df_2, select = -c(newColName_1))
+```
+```{r}
+filtered_DS <- filter(df_1,newColName %in% df_2$newColName)
+filtered_FXS <- filter(df_2,df_2$newColName %in% df_1$newColName)
+```
+```{r}
+total <- rbind(filtered_DS, filtered_FXS)
+```
+```{r}
+write.csv(filtered_DS,"C:/Users/rutac/Desktop/Biostat project/FXS_DS_Common_neurons.csv", sep = '\t', row.names = T)
+```
+----------------------------------------------------------------------------------------------------------------------------------
+###GESA
+```{r}
+df = read.csv("DEG_EU_DS_Neurons.csv", header=TRUE, sep = '\t')
+```
+```{r}
+df <- cbind(Genename = rownames(df), df)
+rownames(df) <- 1:nrow(df)
+```
+```{r}
+GSEA = function(gene_list, GO_file, pval) {
+  set.seed(54321)
+  library(dplyr)
+  library(fgsea)
+  if ( any( duplicated(names(gene_list)) )  ) {
+    warning("Duplicates in gene names")
+    gene_list = gene_list[!duplicated(names(gene_list))]
+  }
+  if  ( !all( order(gene_list, decreasing = TRUE) == 1:length(gene_list)) ){
+    warning("Gene list not sorted")
+    gene_list = sort(gene_list, decreasing = TRUE)
+  }
+  myGO = fgsea::gmtPathways(GO_file)
+  fgRes <- fgsea::fgsea(pathways = myGO,
+                           stats = gene_list,
+                           minSize=15, ## minimum gene set size
+                           maxSize=400, ## maximum gene set size
+                           nperm=10000) %>% 
+                  as.data.frame() %>% 
+                  dplyr::filter(padj < !!pval) %>% 
+                  arrange(desc(NES))
+  message(paste("Number of signficant gene sets =", nrow(fgRes)))
+  message("Collapsing Pathways -----")
+  concise_pathways = collapsePathways(data.table::as.data.table(fgRes),
+                                      pathways = myGO,
+                                      stats = gene_list)
+  fgRes = fgRes[fgRes$pathway %in% concise_pathways$mainPathways, ]
+  message(paste("Number of gene sets after collapsing =", nrow(fgRes)))
+  fgRes$Enrichment = ifelse(fgRes$NES > 0, "Up-regulated", "Down-regulated")
+  filtRes = rbind(head(fgRes, n = 10),
+                  tail(fgRes, n = 10 ))
+  total_up = sum(fgRes$Enrichment == "Up-regulated")
+  total_down = sum(fgRes$Enrichment == "Down-regulated")
+  header = paste0("Top 10 (Total pathways: Up=", total_up,", Down=",    total_down, ")")
+  colos = setNames(c("lightblue", "purple"),
+                 c("Up-regulated", "Down-regulated"))
+g1= ggplot(filtRes, aes(reorder(pathway, NES), NES)) +
+  geom_point( aes(fill = Enrichment, size = size), shape=21) +
+  scale_fill_manual(values = colos ) +
+  scale_size_continuous(range = c(2,10)) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title=header) 
+  output = list("Results" = fgRes, "Plot" = g1)
+  return(output)
+}
+```
+```{r}
+library(dplyr)
+```
+```{r}
+df = df %>% filter(Genename != "")
+gene_list = df$log2FoldChange
+names(gene_list) = df$Genename
+gene_list = sort(gene_list, decreasing = TRUE)
+gene_list = gene_list[!duplicated(names(gene_list))]
+head(gene_list)
+```
+```{r}
+#GO_file = "c5.all.v2023.2.Hs.symbols.gmt"
+GO_file = "c2.cp.reactome.v2023.2.Hs.symbols.gmt"
+res = GSEA(gene_list, GO_file, pval= 0.05)
+dim(res$Results)
+```
+```{r}
+res$Plot
+```
+-----------------------------------------------------------------------------------------------------------------------------
+###GO Analysis
+```{r}
+sigs <- na.omit(res)
+sigs <- sigs[sigs$padj < 0.05 & sigs$baseMean > 50,]
+```
+```{r}
+sigs
+```
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+```
+```{r}
+genes_to_test <- rownames(sigs[sigs$log2FoldChange > 0.2,])
+```
+```{r}
+GO_results <- enrichGO(gene = genes_to_test, OrgDb = "org.Hs.eg.db", keyType = "SYMBOL", ont = "BP")
+```
+```{r}
+as.data.frame(GO_results)
+```
+```{r}
+fit <- plot(barplot(GO_results, showCategory = 15))
+png("out.png", res = 250, width = 1400, height = 1800)
+print(fit)
+dev.off()
+fit
